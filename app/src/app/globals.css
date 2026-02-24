@@ -1,0 +1,132 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  background-color: #09090b;
+  color: #fafafa;
+  font-family: var(--font-sans);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* Selection */
+::selection {
+  background: rgba(139, 92, 246, 0.2);
+  color: #c4b5fd;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 1px solid rgba(139, 92, 246, 0.5);
+  outline-offset: 2px;
+}
+
+/* Marquee animations */
+@keyframes marquee-left {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@keyframes marquee-right {
+  0% { transform: translateX(-50%); }
+  100% { transform: translateX(0); }
+}
+.animate-marquee-left {
+  animation: marquee-left 30s linear infinite;
+}
+.animate-marquee-right {
+  animation: marquee-right 30s linear infinite;
+}
+
+/* Card flip */
+.flip-inner {
+  position: relative;
+  width: 100%;
+  min-height: 560px;
+  transition: transform 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.flip-inner.flipped {
+  transform: rotateY(180deg);
+}
+.flip-face {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  min-height: 560px;
+}
+.flip-front {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.flip-back {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+}
+
+/* Breathing animation for active node */
+@keyframes node-breathe {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 12px rgba(212, 212, 216, 0.1); }
+  50% { transform: scale(1.03); box-shadow: 0 0 24px rgba(212, 212, 216, 0.2); }
+}
+.node-breathing {
+  animation: node-breathe 1.5s ease-in-out infinite;
+}
+
+/* Diagram node base styles (mobile) */
+.diagram-node-mobile {
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 12px;
+  padding: 12px 16px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.4s ease-out, transform 0.4s ease-out,
+    border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.diagram-node-mobile.diagram-node-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Description fade */
+@keyframes desc-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.desc-enter {
+  animation: desc-fade-in 0.4s ease-out forwards;
+}

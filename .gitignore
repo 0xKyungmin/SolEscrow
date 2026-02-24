@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+dist/
+
+# Dependencies
+node_modules/
+
+# Anchor
+.anchor/test-ledger/
+.anchor/program-logs/
+
+# Keys (never commit)
+programs/escrow/escrow-keypair.json
+
+# Next.js
+app/.next/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Claude Code / OMC
+.omc/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
