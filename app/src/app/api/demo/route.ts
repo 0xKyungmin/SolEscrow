@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import {
   Connection,
   Keypair,
@@ -18,7 +17,6 @@ import {
 import type { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import idlJson from "../../../idl/escrow.json";
 import {
-  PROGRAM_ID,
   TOKEN_METADATA_PROGRAM_ID,
   findConfigPDA,
   findEscrowPDA,
@@ -78,7 +76,7 @@ class PollingConnection extends Connection {
           return { context, value: { err: null } };
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error(`Transaction confirmation timeout: ${signature}`);
   }
@@ -97,183 +95,263 @@ function createProgram(provider: AnchorProvider): any {
   return new Program(idlJson as any, provider);
 }
 
+/** Send a single NDJSON line */
+function emit(
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: Record<string, any>
+) {
+  controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
+}
+
 export async function POST() {
-  try {
-    const connection = new PollingConnection(DEVNET_URL, "confirmed");
-    const buyer = loadDemoKeypair();
-    const seller = Keypair.generate();
+  const encoder = new TextEncoder();
 
-    // Fund seller
-    const fundTx = new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: buyer.publicKey,
-        toPubkey: seller.publicKey,
-        lamports: Math.floor(0.05 * LAMPORTS_PER_SOL),
-      })
-    );
-    fundTx.feePayer = buyer.publicKey;
-    fundTx.recentBlockhash = (
-      await connection.getLatestBlockhash()
-    ).blockhash;
-    fundTx.sign(buyer);
-    const fundSig = await connection.sendRawTransaction(fundTx.serialize());
-    await connection.confirmTransaction(fundSig, "confirmed");
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        const connection = new PollingConnection(DEVNET_URL, "confirmed");
+        const buyer = loadDemoKeypair();
+        const seller = Keypair.generate();
 
-    // Create SPL token mint
-    const mint = await createMint(connection, buyer, buyer.publicKey, null, 6);
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Funding accounts...",
+        });
 
-    // Create buyer ATA and mint tokens
-    const buyerAta = await getOrCreateAssociatedTokenAccount(
-      connection,
-      buyer,
-      mint,
-      buyer.publicKey
-    );
-    await mintTo(
-      connection,
-      buyer,
-      mint,
-      buyerAta.address,
-      buyer.publicKey,
-      1_000_000_000
-    );
+        // Fund seller
+        const fundTx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: buyer.publicKey,
+            toPubkey: seller.publicKey,
+            lamports: Math.floor(0.05 * LAMPORTS_PER_SOL),
+          })
+        );
+        fundTx.feePayer = buyer.publicKey;
+        fundTx.recentBlockhash = (
+          await connection.getLatestBlockhash()
+        ).blockhash;
+        fundTx.sign(buyer);
+        const fundSig = await connection.sendRawTransaction(fundTx.serialize());
+        await connection.confirmTransaction(fundSig, "confirmed");
 
-    // Create seller ATA
-    const sellerAta = await getOrCreateAssociatedTokenAccount(
-      connection,
-      buyer,
-      mint,
-      seller.publicKey
-    );
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Creating token mint...",
+        });
 
-    // Setup Anchor
-    const buyerWallet = new KeypairWallet(buyer);
-    const buyerProvider = new AnchorProvider(connection, buyerWallet, {
-      commitment: "confirmed",
-    });
-    const buyerProgram = createProgram(buyerProvider);
+        // Create SPL token mint
+        const mint = await createMint(
+          connection,
+          buyer,
+          buyer.publicKey,
+          null,
+          6
+        );
 
-    const sellerWallet = new KeypairWallet(seller);
-    const sellerProvider = new AnchorProvider(connection, sellerWallet, {
-      commitment: "confirmed",
-    });
-    const sellerProgram = createProgram(sellerProvider);
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Setting up token accounts...",
+        });
 
-    // Check/init config
-    const configPDA = findConfigPDA();
-    const configInfo = await connection.getAccountInfo(configPDA);
-    if (!configInfo) {
-      await buyerProgram.methods
-        .initializeConfig(50, new BN(86400))
-        .accounts({
-          authority: buyer.publicKey,
-          escrowConfig: configPDA,
-          feeCollector: buyer.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-    }
+        // Parallelize: create all ATAs simultaneously
+        const [buyerAta, sellerAta] = await Promise.all([
+          getOrCreateAssociatedTokenAccount(
+            connection,
+            buyer,
+            mint,
+            buyer.publicKey
+          ),
+          getOrCreateAssociatedTokenAccount(
+            connection,
+            buyer,
+            mint,
+            seller.publicKey
+          ),
+        ]);
 
-    const config = await buyerProgram.account.escrowConfig.fetch(configPDA);
-    const feeCollector = config.feeCollector as PublicKey;
-    const feeCollectorAta = await getOrCreateAssociatedTokenAccount(
-      connection,
-      buyer,
-      mint,
-      feeCollector
-    );
+        // Mint tokens to buyer
+        await mintTo(
+          connection,
+          buyer,
+          mint,
+          buyerAta.address,
+          buyer.publicKey,
+          1_000_000_000
+        );
 
-    // Step 0: Create Escrow
-    const seed = new BN(Date.now());
-    const escrowPDA = findEscrowPDA(buyer.publicKey, seed);
-    const vault = getAssociatedTokenAddressSync(mint, escrowPDA, true);
-    const amount = new BN(1_000_000);
-    const milestones = [
-      { amount: new BN(1_000_000), descriptionHash: Array(32).fill(1) },
-    ];
-    const expiresAt = new BN(Math.floor(Date.now() / 1000) + 86400);
+        // Setup Anchor
+        const buyerWallet = new KeypairWallet(buyer);
+        const buyerProvider = new AnchorProvider(connection, buyerWallet, {
+          commitment: "confirmed",
+        });
+        const buyerProgram = createProgram(buyerProvider);
 
-    const tx0: string = await buyerProgram.methods
-      .createEscrow(seed, amount, milestones, expiresAt)
-      .accounts({
-        maker: buyer.publicKey,
-        taker: seller.publicKey,
-        escrowConfig: configPDA,
-        mint,
-        escrowState: escrowPDA,
-        vault,
-        makerTokenAccount: buyerAta.address,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+        const sellerWallet = new KeypairWallet(seller);
+        const sellerProvider = new AnchorProvider(connection, sellerWallet, {
+          commitment: "confirmed",
+        });
+        const sellerProgram = createProgram(sellerProvider);
 
-    // Step 1: Mint Receipt NFT
-    const receiptMint = findReceiptMintPDA(escrowPDA);
-    const metadata = findMetadataPDA(receiptMint);
-    const masterEdition = findMasterEditionPDA(receiptMint);
-    const beneficiaryReceiptAta = getAssociatedTokenAddressSync(
-      receiptMint,
-      seller.publicKey
-    );
+        // Check/init config
+        const configPDA = findConfigPDA();
+        const configInfo = await connection.getAccountInfo(configPDA);
+        if (!configInfo) {
+          emit(controller, encoder, {
+            type: "setup",
+            msg: "Initializing escrow config...",
+          });
+          await buyerProgram.methods
+            .initializeConfig(50, new BN(86400))
+            .accounts({
+              authority: buyer.publicKey,
+              escrowConfig: configPDA,
+              feeCollector: buyer.publicKey,
+              systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+        }
 
-    const tx1: string = await sellerProgram.methods
-      .mintReceipt()
-      .accounts({
-        beneficiary: seller.publicKey,
-        escrowState: escrowPDA,
-        receiptMint,
-        beneficiaryReceiptAta,
-        metadata,
-        masterEdition,
-        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-        rent: web3.SYSVAR_RENT_PUBKEY,
-      })
-      .rpc();
+        const config = await buyerProgram.account.escrowConfig.fetch(configPDA);
+        const feeCollector = config.feeCollector as PublicKey;
+        const feeCollectorAta = await getOrCreateAssociatedTokenAccount(
+          connection,
+          buyer,
+          mint,
+          feeCollector
+        );
 
-    // Step 2: Approve Milestone
-    const tx2: string = await buyerProgram.methods
-      .approveMilestone(0)
-      .accounts({
-        maker: buyer.publicKey,
-        escrowState: escrowPDA,
-      })
-      .rpc();
+        // ── Step 0: Create Escrow ──
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Creating escrow...",
+        });
 
-    // Step 3: Release Milestone
-    const tx3: string = await buyerProgram.methods
-      .releaseMilestone(0)
-      .accounts({
-        payer: buyer.publicKey,
-        escrowState: escrowPDA,
-        escrowConfig: configPDA,
-        mint,
-        vault,
-        beneficiaryTokenAccount: sellerAta.address,
-        feeCollectorTokenAccount: feeCollectorAta.address,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .remainingAccounts([
-        {
-          pubkey: beneficiaryReceiptAta,
-          isWritable: false,
-          isSigner: false,
-        },
-      ])
-      .rpc();
+        const seed = new BN(Date.now());
+        const escrowPDA = findEscrowPDA(buyer.publicKey, seed);
+        const vault = getAssociatedTokenAddressSync(mint, escrowPDA, true);
+        const amount = new BN(1_000_000);
+        const milestones = [
+          { amount: new BN(1_000_000), descriptionHash: Array(32).fill(1) },
+        ];
+        const expiresAt = new BN(Math.floor(Date.now() / 1000) + 86400);
 
-    return NextResponse.json({
-      signatures: [tx0, tx1, tx2, tx3],
-    });
-  } catch (err: unknown) {
-    console.error("Demo API error:", err);
-    return NextResponse.json(
-      { error: "Demo transaction failed. Please try again later." },
-      { status: 500 }
-    );
-  }
+        const tx0: string = await buyerProgram.methods
+          .createEscrow(seed, amount, milestones, expiresAt)
+          .accounts({
+            maker: buyer.publicKey,
+            taker: seller.publicKey,
+            escrowConfig: configPDA,
+            mint,
+            escrowState: escrowPDA,
+            vault,
+            makerTokenAccount: buyerAta.address,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+
+        emit(controller, encoder, {
+          type: "step",
+          step: 0,
+          txSignature: tx0,
+        });
+
+        // ── Step 1: Mint Receipt NFT ──
+        const receiptMint = findReceiptMintPDA(escrowPDA);
+        const metadata = findMetadataPDA(receiptMint);
+        const masterEdition = findMasterEditionPDA(receiptMint);
+        const beneficiaryReceiptAta = getAssociatedTokenAddressSync(
+          receiptMint,
+          seller.publicKey
+        );
+
+        const tx1: string = await sellerProgram.methods
+          .mintReceipt()
+          .accounts({
+            beneficiary: seller.publicKey,
+            escrowState: escrowPDA,
+            receiptMint,
+            beneficiaryReceiptAta,
+            metadata,
+            masterEdition,
+            tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: web3.SYSVAR_RENT_PUBKEY,
+          })
+          .rpc();
+
+        emit(controller, encoder, {
+          type: "step",
+          step: 1,
+          txSignature: tx1,
+        });
+
+        // ── Step 2: Approve Milestone ──
+        const tx2: string = await buyerProgram.methods
+          .approveMilestone(0)
+          .accounts({
+            maker: buyer.publicKey,
+            escrowState: escrowPDA,
+          })
+          .rpc();
+
+        emit(controller, encoder, {
+          type: "step",
+          step: 2,
+          txSignature: tx2,
+        });
+
+        // ── Step 3: Release Milestone ──
+        const tx3: string = await buyerProgram.methods
+          .releaseMilestone(0)
+          .accounts({
+            payer: buyer.publicKey,
+            escrowState: escrowPDA,
+            escrowConfig: configPDA,
+            mint,
+            vault,
+            beneficiaryTokenAccount: sellerAta.address,
+            feeCollectorTokenAccount: feeCollectorAta.address,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts([
+            {
+              pubkey: beneficiaryReceiptAta,
+              isWritable: false,
+              isSigner: false,
+            },
+          ])
+          .rpc();
+
+        emit(controller, encoder, {
+          type: "step",
+          step: 3,
+          txSignature: tx3,
+        });
+
+        emit(controller, encoder, { type: "done" });
+        controller.close();
+      } catch (err: unknown) {
+        console.error("Demo API error:", err);
+        emit(controller, encoder, {
+          type: "error",
+          error: "Demo transaction failed. Please try again later.",
+        });
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }

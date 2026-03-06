@@ -1,6 +1,6 @@
 /**
- * Client-side demo flow — calls the server-side API route to execute
- * transactions securely (private key never leaves the server).
+ * Client-side demo flow — streams progress from the server-side API route.
+ * Each step appears on screen as soon as it confirms on-chain.
  */
 
 /* ── Public types ── */
@@ -13,9 +13,6 @@ export type SetupCallback = (msg: string) => void;
 export type StepCallback = (result: StepResult) => void;
 export type ErrorCallback = (error: string) => void;
 
-/** Delay helper for smooth UI animations between steps */
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 /* ── Main demo flow ── */
 export async function runDemoFlow(
   onSetup: SetupCallback,
@@ -23,23 +20,41 @@ export async function runDemoFlow(
   onError: ErrorCallback
 ): Promise<void> {
   try {
-    onSetup("Executing escrow lifecycle on devnet...");
+    onSetup("Connecting to devnet...");
 
     const res = await fetch("/api/demo", { method: "POST" });
-    const data = await res.json();
 
-    if (!res.ok || data.error) {
-      onError(data.error ?? `Server error: ${res.status}`);
+    if (!res.ok || !res.body) {
+      onError(`Server error: ${res.status}`);
       return;
     }
 
-    const signatures: string[] = data.signatures;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    // Animate through the 4 steps with delays for UI effect
-    for (let i = 0; i < signatures.length; i++) {
-      onStep({ step: i, txSignature: signatures[i] });
-      if (i < signatures.length - 1) {
-        await delay(1500);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!; // keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+
+        if (event.type === "setup") {
+          onSetup(event.msg);
+        } else if (event.type === "step") {
+          onStep({ step: event.step, txSignature: event.txSignature });
+          onSetup("");
+        } else if (event.type === "error") {
+          onError(event.error);
+          return;
+        }
+        // "done" — loop will end naturally
       }
     }
   } catch (err: unknown) {
