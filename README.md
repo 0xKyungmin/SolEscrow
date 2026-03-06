@@ -3,7 +3,7 @@
 ![Solana](https://img.shields.io/badge/Solana-14F195?style=for-the-badge&logo=solana&logoColor=000)
 ![Anchor](https://img.shields.io/badge/Anchor-0.32.1-blue?style=for-the-badge)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=for-the-badge&logo=rust)
-![Tests](https://img.shields.io/badge/Tests-76%20Passing-brightgreen?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-82%20Passing-brightgreen?style=for-the-badge)
 
 **Program ID:** [`GCc4exWhx2tyw9ELQw8Y29izvXNG2FcVdfkYk8wo8BsF`](https://explorer.solana.com/address/GCc4exWhx2tyw9ELQw8Y29izvXNG2FcVdfkYk8wo8BsF?cluster=devnet)
 
@@ -145,18 +145,20 @@ Vault (ATA: mint + escrow_state PDA as authority)
 | Fee snapshot at creation (`fee_bps_at_creation`) | Config changes don't affect existing escrows |
 | 50/50 split on dispute timeout | Fair fallback when authority is inactive |
 | Token-2022 extended mint rejection | Prevents transfer-fee accounting issues |
-| Freeze authority rejection | Prevents vault freeze griefing |
+| Freeze authority rejection | Prevents vault freeze griefing (intentional: USDC excluded) |
 | 1-hour minimum expiration | Prevents instant-expiry griefing |
 | Receipt NFT sync verification | release, claim_expired, resolve check NFT holder matches beneficiary |
+| Receipt NFT invalidation on termination | cancel, claim_expired, resolve(MakerWins) clear `receipt_mint` |
+| Safe fee calculation (u128 intermediate) | Prevents overflow on large amounts, checked u64 downcast |
 
 ---
 
 ## Testing
 
-76 integration tests covering all instructions, authorization failures, validation failures, dispute resolutions, transferable claims, and Receipt NFT lifecycle.
+82 tests covering all instructions, authorization failures, validation failures, dispute resolutions, transferable claims, Receipt NFT lifecycle, receipt invalidation on escrow termination, fee rounding edge cases, and large-amount overflow safety.
 
 ```bash
-anchor test    # 76 passing
+anchor test    # 82 passing
 ```
 
 ---
@@ -251,6 +253,6 @@ earn/
 ├── app/                            Next.js frontend
 ├── scripts/devnet-demo.ts          Full lifecycle demo
 └── tests/
-    ├── escrow.ts                   65 integration tests
-    └── escrow-bankrun.ts           11 bankrun tests (fast)
+    ├── escrow.ts                   75 integration tests
+    └── escrow-bankrun.ts           7 bankrun tests (time-dependent)
 ```

@@ -159,6 +159,11 @@ pub fn handler(ctx: Context<ResolveDispute>, resolution: DisputeResolution) -> R
         }
     }
 
+    // Invalidate receipt NFT when maker wins (escrow cancelled — receipt has no value)
+    if matches!(resolution, DisputeResolution::MakerWins) {
+        escrow.receipt_mint = None;
+    }
+
     // Store resolution in dispute
     if let Some(ref mut dispute) = escrow.dispute {
         dispute.resolution = Some(resolution.clone());

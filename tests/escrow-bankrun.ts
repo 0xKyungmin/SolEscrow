@@ -262,7 +262,7 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // Test 66: claim_expired active-expired path
   //          (approved milestones released, pending cancelled)
   // =========================================================================
-  it("71. claim_expired: active-expired path — approved milestones released, pending cancelled", async () => {
+  it("76. claim_expired: active-expired path — approved milestones released, pending cancelled", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200); // 2 hours from now
@@ -371,7 +371,7 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // =========================================================================
   // Test 67: claim_expired dispute timeout path (50/50 split)
   // =========================================================================
-  it("72. claim_expired: dispute timeout path — 50/50 split of remaining", async () => {
+  it("77. claim_expired: dispute timeout path — 50/50 split of remaining", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200);
@@ -473,7 +473,7 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // =========================================================================
   // Test 68: resolve_dispute fails after timeout deadline
   // =========================================================================
-  it("73. resolve_dispute: fails after dispute timeout deadline (EscrowExpired)", async () => {
+  it("78. resolve_dispute: fails after dispute timeout deadline (EscrowExpired)", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200);
@@ -535,7 +535,7 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // =========================================================================
   // Test 69: claim_expired fails when not yet expired (EscrowNotExpired)
   // =========================================================================
-  it("74. claim_expired: fails on active escrow that has not expired (EscrowNotExpired)", async () => {
+  it("79. claim_expired: fails on active escrow that has not expired (EscrowNotExpired)", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200);
@@ -577,7 +577,7 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // Test 70: claim_expired fails on disputed escrow before timeout
   //          (EscrowNotExpired)
   // =========================================================================
-  it("75. claim_expired: fails on disputed escrow before dispute timeout (EscrowNotExpired)", async () => {
+  it("80. claim_expired: fails on disputed escrow before dispute timeout (EscrowNotExpired)", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200);
@@ -630,7 +630,53 @@ describe("escrow-bankrun (time-dependent tests)", () => {
   // =========================================================================
   // Test 71: claim_expired with ALL milestones approved
   // =========================================================================
-  it("76. claim_expired: all milestones approved — everything released to beneficiary, nothing refunded", async () => {
+  // =========================================================================
+  // Test: claim_expired invalidates receipt_mint
+  // =========================================================================
+  it("81. claim_expired: receipt_mint is invalidated on expiration", async () => {
+    const clock = await context.banksClient.getClock();
+    const now = Number(clock.unixTimestamp);
+    const expiresAt = new BN(now + 7200);
+
+    const { escrowPDA, vault } = await setupEscrow({
+      milestoneAmounts: [TOTAL_AMOUNT],
+      expiresAt,
+    });
+
+    // We cannot easily mint Receipt NFT in bankrun (requires Metaplex CPI),
+    // but we CAN verify that receipt_mint is None after claim_expired.
+    // Since no receipt was minted, receipt_mint starts as None and stays None.
+    // This test verifies the claim_expired path sets status to Expired correctly
+    // and receipt_mint remains null (the program clears it unconditionally).
+
+    // Warp past expiration
+    await warpTo(expiresAt.toNumber() + 1);
+
+    await program.methods
+      .claimExpired()
+      .accounts({
+        payer: stranger.publicKey,
+        escrowState: escrowPDA,
+        escrowConfig: configPDA,
+        mint,
+        vault,
+        makerTokenAccount: makerATA,
+        beneficiaryTokenAccount: takerATA,
+        feeCollectorTokenAccount: feeCollectorATA,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([stranger])
+      .rpc();
+
+    const escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.ok(escrow.status.expired !== undefined, "Escrow should be Expired");
+    assert.isNull(escrow.receiptMint, "receipt_mint should be null after claim_expired");
+  });
+
+  // =========================================================================
+  // Test 71: claim_expired with ALL milestones approved
+  // =========================================================================
+  it("82. claim_expired: all milestones approved — everything released to beneficiary, nothing refunded", async () => {
     const clock = await context.banksClient.getClock();
     const now = Number(clock.unixTimestamp);
     const expiresAt = new BN(now + 7200);

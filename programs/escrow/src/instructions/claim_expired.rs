@@ -164,6 +164,8 @@ pub fn handler(ctx: Context<ClaimExpired>) -> Result<()> {
             .ok_or(EscrowError::Overflow)?;
     }
     escrow.status = EscrowStatus::Expired;
+    // Invalidate receipt NFT on terminal state
+    escrow.receipt_mint = None;
 
     // PDA signer seeds
     let maker_key = escrow.maker;

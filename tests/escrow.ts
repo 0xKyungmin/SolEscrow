@@ -242,18 +242,10 @@ describe("escrow", () => {
   // ===========================================================================
   // 2. initialize_config - fail with fee_bps > 10000
   // ===========================================================================
-  it("2. initialize_config: fails when fee_bps > 10000", async () => {
+  it("2. initialize_config: rejects re-initialization of singleton config PDA", async () => {
     // The config PDA is a singleton ["escrow_config"] — it was already initialized
-    // in before(). Attempting to re-initialize it with invalid fee_bps would be
-    // rejected by Anchor's `init` constraint ("already in use") BEFORE the program
-    // handler runs. To isolate the InvalidFeeRate guard we call the instruction
-    // with the existing PDA (not `init`) — Anchor will reject it because `init`
-    // requires the account to not exist. The real fee_bps validation fires in a
-    // fresh deployment before the account is allocated.
-    //
-    // We verify the guard is correct by attempting the call and confirming the
-    // transaction fails. Any on-chain error (account conflict or fee validation)
-    // means the instruction correctly rejects an invalid combination.
+    // in before(). Re-initializing is rejected by Anchor's `init` constraint
+    // ("already in use"). This verifies the singleton invariant holds.
     const badAuth = Keypair.generate();
     await airdropSol(connection, badAuth.publicKey);
     const dummyCollector = Keypair.generate();
@@ -269,13 +261,14 @@ describe("escrow", () => {
         })
         .signers([badAuth])
         .rpc();
-      assert.fail("Should have rejected invalid fee_bps or already-initialized PDA");
+      assert.fail("Should have rejected re-initialization of singleton PDA");
     } catch (err: any) {
-      // Either "already in use" (account conflict) or InvalidFeeRate — both confirm
-      // the instruction correctly refuses to proceed.
+      // Anchor's init constraint rejects because the account already exists.
       assert.ok(
-        err.message.length > 0,
-        "Expected a transaction error for invalid initialize_config"
+        err.message.includes("already in use") ||
+          err.message.includes("0x0") ||
+          err.message.includes("custom program error"),
+        `Expected account-already-in-use error, got: ${err.message}`
       );
     }
   });
@@ -472,11 +465,10 @@ describe("escrow", () => {
         .rpc();
       assert.fail("Should have thrown Unauthorized");
     } catch (err: any) {
-      // Anchor constraint violation or Unauthorized error
       assert.ok(
-        err.message.includes("Unauthorized") ||
-          err.message.includes("Error") ||
-          err.message.includes("constraint"),
+        err.message.includes("NotMaker") ||
+          err.message.includes("Unauthorized") ||
+          err.message.includes("ConstraintRaw"),
         `Unexpected error: ${err.message}`
       );
     }
@@ -652,12 +644,12 @@ describe("escrow", () => {
         })
         .signers([stranger])
         .rpc();
-      assert.fail("Should have thrown Unauthorized");
+      assert.fail("Should have thrown NotMaker");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("Unauthorized") ||
-          err.message.includes("Error") ||
-          err.message.includes("constraint"),
+        err.message.includes("NotMaker") ||
+          err.message.includes("Unauthorized") ||
+          err.message.includes("ConstraintRaw"),
         `Unexpected error: ${err.message}`
       );
     }
@@ -1272,12 +1264,12 @@ describe("escrow", () => {
         })
         .signers([stranger])
         .rpc();
-      assert.fail("Should have thrown Unauthorized");
+      assert.fail("Should have thrown NotMaker");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("Unauthorized") ||
-          err.message.includes("constraint") ||
-          err.message.includes("Error"),
+        err.message.includes("NotMaker") ||
+          err.message.includes("Unauthorized") ||
+          err.message.includes("ConstraintRaw"),
         `Unexpected error: ${err.message}`
       );
     }
@@ -1486,8 +1478,8 @@ describe("escrow", () => {
       assert.fail("Should have thrown InvalidMilestoneCount");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("InvalidMilestoneCount") || err.message.includes("Error"),
-        `Unexpected error: ${err.message}`
+        err.message.includes("InvalidMilestoneCount") || err.message.includes("custom program error"),
+        `Expected InvalidMilestoneCount error, got: ${err.message}`
       );
     }
   });
@@ -1965,7 +1957,7 @@ describe("escrow", () => {
       assert.fail("Should have thrown SelfEscrow");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("SelfEscrow") || err.message.includes("Error"),
+        err.message.includes("SelfEscrow") || err.message.includes("custom program error"),
         `Expected SelfEscrow error, got: ${err.message}`
       );
     }
@@ -1999,7 +1991,7 @@ describe("escrow", () => {
       assert.fail("Should have thrown InvalidAmount or InvalidMilestoneCount");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("InvalidAmount") || err.message.includes("InvalidMilestoneCount") || err.message.includes("Error"),
+        err.message.includes("InvalidAmount") || err.message.includes("InvalidMilestoneCount") || err.message.includes("custom program error"),
         `Expected InvalidAmount error, got: ${err.message}`
       );
     }
@@ -2024,7 +2016,7 @@ describe("escrow", () => {
       assert.fail("Should have thrown InvalidBeneficiary");
     } catch (err: any) {
       assert.ok(
-        err.message.includes("InvalidBeneficiary") || err.message.includes("Error"),
+        err.message.includes("InvalidBeneficiary") || err.message.includes("custom program error"),
         `Expected InvalidBeneficiary error, got: ${err.message}`
       );
     }
@@ -3324,7 +3316,164 @@ describe("escrow", () => {
   // ===========================================================================
   // 70. release_milestone - fail: Receipt NFT not synced (BeneficiaryNotSynced)
   // ===========================================================================
-  it("70. release_milestone: fails when Receipt NFT holder differs from beneficiary (BeneficiaryNotSynced)", async () => {
+  // ===========================================================================
+  // 70. Edge case: large amounts near u64 boundary
+  // ===========================================================================
+  it("70. create_escrow: handles large token amounts correctly (u64 edge case)", async () => {
+    // Create a dedicated mint + accounts for this large-amount test
+    const largeMint = await createTestMint(connection, maker);
+    const largeMakerATA = await createTokenAccount(
+      connection,
+      maker,
+      largeMint,
+      maker.publicKey
+    );
+    await createTokenAccount(connection, maker, largeMint, taker.publicKey);
+    await createTokenAccount(
+      connection,
+      maker,
+      largeMint,
+      feeCollector.publicKey
+    );
+
+    // Mint a very large amount (near u64 max is infeasible, use 10^18 which is still very large)
+    const largeAmount = new BN("1000000000000000000"); // 10^18
+    await mintTo(
+      connection,
+      maker,
+      largeMint,
+      largeMakerATA,
+      maker,
+      BigInt(largeAmount.toString())
+    );
+
+    const seed = nextSeed();
+    const [escrowPDA] = findEscrowPDA(maker.publicKey, seed);
+    const vault = getAssociatedTokenAddressSync(largeMint, escrowPDA, true);
+
+    const milestones = makeMilestones(
+      [largeAmount],
+      ["large-milestone"]
+    );
+    const expiresAt = new BN(Math.floor(Date.now() / 1000) + 3600);
+
+    // Should succeed without overflow
+    await program.methods
+      .createEscrow(seed, largeAmount, milestones, expiresAt)
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mint: largeMint,
+        escrowState: escrowPDA,
+        vault,
+        makerTokenAccount: largeMakerATA,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([maker])
+      .rpc();
+
+    const escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.equal(
+      escrow.amount.toString(),
+      largeAmount.toString(),
+      "Escrow should store large amount correctly"
+    );
+    assert.equal(
+      escrow.milestones[0].amount.toString(),
+      largeAmount.toString(),
+      "Milestone should store large amount correctly"
+    );
+
+    // Verify vault balance
+    const vaultAccount = await getAccount(connection, vault);
+    assert.equal(
+      vaultAccount.amount.toString(),
+      largeAmount.toString(),
+      "Vault should hold full large amount"
+    );
+  });
+
+  // ===========================================================================
+  // 71. Edge case: fee calculation with large amount and odd bps
+  // ===========================================================================
+  it("71. release_milestone: fee rounding is correct with large amounts", async () => {
+    // Use an odd amount that produces non-integer fee: 999_999 * 250 / 10000 = 24999.975 → truncated to 24999
+    const oddAmount = new BN(999_999);
+    await mintTo(
+      connection,
+      authority,
+      mint,
+      makerATA,
+      authority,
+      BigInt(oddAmount.toString())
+    );
+
+    const { escrowPDA, vault } = await setupEscrow({
+      amount: oddAmount,
+      milestoneAmounts: [oddAmount],
+    });
+
+    await program.methods
+      .approveMilestone(0)
+      .accounts({ maker: maker.publicKey, escrowState: escrowPDA })
+      .signers([maker])
+      .rpc();
+
+    const takerBefore = await getAccount(connection, takerATA);
+    const feeBefore = await getAccount(connection, feeCollectorATA);
+
+    await program.methods
+      .releaseMilestone(0)
+      .accounts({
+        payer: maker.publicKey,
+        escrowState: escrowPDA,
+        escrowConfig: configPDA,
+        mint,
+        vault,
+        beneficiaryTokenAccount: takerATA,
+        feeCollectorTokenAccount: feeCollectorATA,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([maker])
+      .rpc();
+
+    const takerAfter = await getAccount(connection, takerATA);
+    const feeAfter = await getAccount(connection, feeCollectorATA);
+
+    // fee = floor(999_999 * 250 / 10_000) = floor(24999975 / 10000) = 24999
+    // net = 999_999 - 24999 = 975_000
+    const expectedFee = BigInt(24999);
+    const expectedNet = BigInt(975000);
+
+    const actualFee = feeAfter.amount - feeBefore.amount;
+    const actualNet = takerAfter.amount - takerBefore.amount;
+
+    assert.equal(
+      actualFee.toString(),
+      expectedFee.toString(),
+      "Fee should be truncated (floor), not rounded"
+    );
+    assert.equal(
+      actualNet.toString(),
+      expectedNet.toString(),
+      "Net = amount - fee, no dust lost"
+    );
+
+    // Verify vault is empty (no dust)
+    const vaultAfter = await getAccount(connection, vault);
+    assert.equal(
+      vaultAfter.amount.toString(),
+      "0",
+      "Vault must be completely empty after release"
+    );
+  });
+
+  // ===========================================================================
+  // 72. release_milestone: fails when Receipt NFT holder differs from beneficiary
+  // ===========================================================================
+  it("72. release_milestone: fails when Receipt NFT holder differs from beneficiary (BeneficiaryNotSynced)", async () => {
     const { escrowPDA, vault } = await setupEscrow({
       milestoneAmounts: [TOTAL_AMOUNT],
     });
@@ -3401,5 +3550,225 @@ describe("escrow", () => {
     } catch (err: any) {
       assert.include(err.message, "BeneficiaryNotSynced");
     }
+  });
+
+  // ===========================================================================
+  // 73. cancel_escrow: receipt_mint is invalidated when escrow is fully cancelled
+  // ===========================================================================
+  it("73. cancel_escrow: invalidates receipt_mint when escrow is fully cancelled", async () => {
+    const { escrowPDA, vault } = await setupEscrow({
+      milestoneAmounts: [TOTAL_AMOUNT],
+      amount: TOTAL_AMOUNT,
+    });
+
+    // Beneficiary mints Receipt NFT
+    const [receiptMint] = findReceiptMintPDA(escrowPDA);
+    const [metadata] = findMetadataPDA(receiptMint);
+    const [masterEdition] = findMasterEditionPDA(receiptMint);
+    const beneficiaryReceiptAta = getAssociatedTokenAddressSync(
+      receiptMint,
+      taker.publicKey
+    );
+
+    await program.methods
+      .mintReceipt()
+      .accounts({
+        beneficiary: taker.publicKey,
+        escrowState: escrowPDA,
+        receiptMint,
+        beneficiaryReceiptAta,
+        metadata,
+        masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .signers([taker])
+      .rpc();
+
+    // Verify receipt_mint is set
+    let escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.isNotNull(escrow.receiptMint, "receipt_mint should be set before cancel");
+
+    // Cancel escrow (all milestones are Pending → all Cancelled → status = Cancelled)
+    await program.methods
+      .cancelEscrow()
+      .accounts({
+        maker: maker.publicKey,
+        escrowState: escrowPDA,
+        mint,
+        vault,
+        makerTokenAccount: makerATA,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([maker])
+      .rpc();
+
+    // Verify receipt_mint is invalidated
+    escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.ok(escrow.status.cancelled !== undefined, "Escrow should be Cancelled");
+    assert.isNull(escrow.receiptMint, "receipt_mint should be null after cancel");
+
+    // NFT still exists in beneficiary's wallet (souvenir)
+    const ataAccount = await getAccount(connection, beneficiaryReceiptAta);
+    assert.equal(ataAccount.amount.toString(), "1", "NFT should still exist in wallet");
+  });
+
+  // ===========================================================================
+  // 74. resolve_dispute MakerWins: receipt_mint is invalidated
+  // ===========================================================================
+  it("74. resolve_dispute: MakerWins invalidates receipt_mint", async () => {
+    const { escrowPDA, vault } = await setupEscrow({
+      milestoneAmounts: [TOTAL_AMOUNT],
+      amount: TOTAL_AMOUNT,
+    });
+
+    // Beneficiary mints Receipt NFT
+    const [receiptMint] = findReceiptMintPDA(escrowPDA);
+    const [metadata] = findMetadataPDA(receiptMint);
+    const [masterEdition] = findMasterEditionPDA(receiptMint);
+    const beneficiaryReceiptAta = getAssociatedTokenAddressSync(
+      receiptMint,
+      taker.publicKey
+    );
+
+    await program.methods
+      .mintReceipt()
+      .accounts({
+        beneficiary: taker.publicKey,
+        escrowState: escrowPDA,
+        receiptMint,
+        beneficiaryReceiptAta,
+        metadata,
+        masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .signers([taker])
+      .rpc();
+
+    // Initiate dispute
+    const reasonHash = Array.from(
+      Buffer.from("test dispute for maker wins".padEnd(32, "\0"))
+    );
+    await program.methods
+      .initiateDispute(reasonHash)
+      .accounts({
+        initiator: taker.publicKey,
+        escrowState: escrowPDA,
+        escrowConfig: configPDA,
+      })
+      .signers([taker])
+      .rpc();
+
+    // Verify receipt_mint is set before resolve
+    let escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.isNotNull(escrow.receiptMint, "receipt_mint should be set before resolve");
+
+    // Resolve dispute: MakerWins (must pass receipt ATA in remaining_accounts for sync check)
+    await program.methods
+      .resolveDispute({ makerWins: {} })
+      .accounts({
+        authority: authority.publicKey,
+        escrowConfig: configPDA,
+        escrowState: escrowPDA,
+        mint,
+        vault,
+        makerTokenAccount: makerATA,
+        beneficiaryTokenAccount: takerATA,
+        feeCollectorTokenAccount: feeCollectorATA,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts([
+        { pubkey: beneficiaryReceiptAta, isWritable: false, isSigner: false },
+      ])
+      .signers([authority])
+      .rpc();
+
+    // Verify receipt_mint is invalidated
+    escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.ok(escrow.status.cancelled !== undefined, "Escrow should be Cancelled");
+    assert.isNull(escrow.receiptMint, "receipt_mint should be null after MakerWins");
+  });
+
+  // ===========================================================================
+  // 75. resolve_dispute TakerWins: receipt_mint is preserved
+  // ===========================================================================
+  it("75. resolve_dispute: TakerWins preserves receipt_mint", async () => {
+    const { escrowPDA, vault } = await setupEscrow({
+      milestoneAmounts: [TOTAL_AMOUNT],
+      amount: TOTAL_AMOUNT,
+    });
+
+    // Beneficiary mints Receipt NFT
+    const [receiptMint] = findReceiptMintPDA(escrowPDA);
+    const [metadata] = findMetadataPDA(receiptMint);
+    const [masterEdition] = findMasterEditionPDA(receiptMint);
+    const beneficiaryReceiptAta = getAssociatedTokenAddressSync(
+      receiptMint,
+      taker.publicKey
+    );
+
+    await program.methods
+      .mintReceipt()
+      .accounts({
+        beneficiary: taker.publicKey,
+        escrowState: escrowPDA,
+        receiptMint,
+        beneficiaryReceiptAta,
+        metadata,
+        masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .signers([taker])
+      .rpc();
+
+    // Initiate dispute
+    const reasonHash = Array.from(
+      Buffer.from("test dispute for taker wins".padEnd(32, "\0"))
+    );
+    await program.methods
+      .initiateDispute(reasonHash)
+      .accounts({
+        initiator: maker.publicKey,
+        escrowState: escrowPDA,
+        escrowConfig: configPDA,
+      })
+      .signers([maker])
+      .rpc();
+
+    // Resolve dispute: TakerWins
+    await program.methods
+      .resolveDispute({ takerWins: {} })
+      .accounts({
+        authority: authority.publicKey,
+        escrowConfig: configPDA,
+        escrowState: escrowPDA,
+        mint,
+        vault,
+        makerTokenAccount: makerATA,
+        beneficiaryTokenAccount: takerATA,
+        feeCollectorTokenAccount: feeCollectorATA,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts([
+        { pubkey: beneficiaryReceiptAta, isWritable: false, isSigner: false },
+      ])
+      .signers([authority])
+      .rpc();
+
+    // Verify receipt_mint is PRESERVED (TakerWins = escrow completed, NFT valid)
+    const escrow = await program.account.escrowState.fetch(escrowPDA);
+    assert.ok(escrow.status.completed !== undefined, "Escrow should be Completed");
+    assert.isNotNull(escrow.receiptMint, "receipt_mint should be preserved after TakerWins");
   });
 });

@@ -46,11 +46,12 @@ pub fn transfer_from_vault<'info>(
 /// Calculate fee and net amount. Returns (fee, net) where net = amount - fee.
 /// Uses u128 intermediate to avoid overflow for large amounts.
 pub fn calculate_fee(amount: u64, fee_bps: u64) -> Result<(u64, u64)> {
-    let fee = (amount as u128)
+    let fee_128 = (amount as u128)
         .checked_mul(fee_bps as u128)
         .ok_or(EscrowError::Overflow)?
         .checked_div(10_000)
-        .ok_or(EscrowError::Overflow)? as u64;
+        .ok_or(EscrowError::Overflow)?;
+    let fee = u64::try_from(fee_128).map_err(|_| error!(EscrowError::Overflow))?;
     let net = amount
         .checked_sub(fee)
         .ok_or(EscrowError::Overflow)?;

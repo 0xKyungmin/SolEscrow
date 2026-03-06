@@ -90,6 +90,10 @@ pub fn handler(ctx: Context<CancelEscrow>) -> Result<()> {
 
     if all_settled {
         escrow.status = EscrowStatus::Cancelled;
+        // Invalidate receipt NFT — the on-chain link is severed so the NFT
+        // no longer grants any escrow rights (the token itself remains in the
+        // beneficiary's wallet as a non-functional souvenir).
+        escrow.receipt_mint = None;
     }
 
     emit!(EscrowCancelled {

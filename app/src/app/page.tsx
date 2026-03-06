@@ -169,10 +169,10 @@ const marqueeRows: { direction: "left" | "right"; tags: MarqueeTag[] }[] = [
     direction: "left",
     tags: [
       { icon: Code, label: "14 Instructions" },
-      { icon: TestTube, label: "76 Tests" },
+      { icon: TestTube, label: "82 Tests" },
       { icon: Cpu, label: "< 1 sec Finality" },
       { icon: Coins, label: "$0.001 per TX" },
-      { icon: Lock, label: "Audited Code" },
+      { icon: Lock, label: "Battle Tested" },
       { icon: Key, label: "Permissionless" },
     ],
   },
