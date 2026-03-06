@@ -259,6 +259,11 @@ export async function POST() {
           txSignature: tx0,
         });
 
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Minting receipt NFT...",
+        });
+
         // ── Step 1: Mint Receipt NFT ──
         const receiptMint = findReceiptMintPDA(escrowPDA);
         const metadata = findMetadataPDA(receiptMint);
@@ -291,6 +296,11 @@ export async function POST() {
           txSignature: tx1,
         });
 
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Approving milestone...",
+        });
+
         // ── Step 2: Approve Milestone ──
         const tx2: string = await buyerProgram.methods
           .approveMilestone(0)
@@ -304,6 +314,11 @@ export async function POST() {
           type: "step",
           step: 2,
           txSignature: tx2,
+        });
+
+        emit(controller, encoder, {
+          type: "setup",
+          msg: "Releasing funds...",
         });
 
         // ── Step 3: Release Milestone ──

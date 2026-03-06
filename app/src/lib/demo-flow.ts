@@ -49,7 +49,6 @@ export async function runDemoFlow(
           onSetup(event.msg);
         } else if (event.type === "step") {
           onStep({ step: event.step, txSignature: event.txSignature });
-          onSetup("");
         } else if (event.type === "error") {
           onError(event.error);
           return;
@@ -57,6 +56,8 @@ export async function runDemoFlow(
         // "done" — loop will end naturally
       }
     }
+
+    onSetup(""); // clear setup message when stream ends
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     onError(msg);
