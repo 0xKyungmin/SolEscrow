@@ -51,6 +51,39 @@ class KeypairWallet {
 
 const DEVNET_URL = "https://api.devnet.solana.com";
 
+/**
+ * Subclass Connection to replace WebSocket-based confirmTransaction
+ * with HTTP polling (getSignatureStatuses).
+ * Vercel serverless does not support persistent WebSocket connections,
+ * causing "t.mask is not a function" errors from the ws package.
+ */
+class PollingConnection extends Connection {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async confirmTransaction(...args: any[]): Promise<any> {
+    const strategy = args[0];
+    const signature =
+      typeof strategy === "string" ? strategy : strategy.signature;
+
+    for (let i = 0; i < 60; i++) {
+      const { value, context } = await this.getSignatureStatuses([signature]);
+      const status = value[0];
+      if (status) {
+        if (status.err) {
+          return { context, value: { err: status.err } };
+        }
+        if (
+          status.confirmationStatus === "confirmed" ||
+          status.confirmationStatus === "finalized"
+        ) {
+          return { context, value: { err: null } };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    throw new Error(`Transaction confirmation timeout: ${signature}`);
+  }
+}
+
 function loadDemoKeypair(): Keypair {
   const raw = process.env.DEMO_KEYPAIR;
   if (!raw) throw new Error("DEMO_KEYPAIR not set in .env.local");
@@ -66,7 +99,7 @@ function createProgram(provider: AnchorProvider): any {
 
 export async function POST() {
   try {
-    const connection = new Connection(DEVNET_URL, "confirmed");
+    const connection = new PollingConnection(DEVNET_URL, "confirmed");
     const buyer = loadDemoKeypair();
     const seller = Keypair.generate();
 
